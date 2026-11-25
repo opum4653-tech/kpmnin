@@ -1,6 +1,8 @@
 name: Build CI
 
 on:
+  push:
+    branches: [ main, master ]
   workflow_call:
   workflow_dispatch:
 
@@ -58,6 +60,15 @@ jobs:
           cd ../demo-syscallhook
           make
           mv syscallhook.kpm demo-syscallhook.kpm
+
+          cd ../na_driver
+          make
+
+      - name: Upload NinMods.kpm
+        uses: actions/upload-artifact@v4
+        with:
+          path: kpms/na_driver/NinMods.kpm
+          name: NinMods.kpm
 
       - name: Upload elf
         uses: actions/upload-artifact@v4
