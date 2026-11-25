@@ -234,16 +234,16 @@ static long na_init(const char *args, const char *event, void *__user reserved)
     kf_access_process_vm = (typeof(kf_access_process_vm))kallsyms_lookup_name("access_process_vm");
     detect_comm_offset();
 
-    err = fp_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
+    err = inline_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
     if (err == HOOK_NO_ERR) {
-        g_use_inline_hook = 0;
+        g_use_inline_hook = 1;
         g_hooked = 1;
         return 0;
     }
 
-    err = inline_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
+    err = fp_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
     if (err == HOOK_NO_ERR) {
-        g_use_inline_hook = 1;
+        g_use_inline_hook = 0;
         g_hooked = 1;
     }
     return 0;
