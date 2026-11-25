@@ -8,12 +8,8 @@ endif
 
 CC = $(TARGET_COMPILE)gcc
 LD = $(TARGET_COMPILE)ld
-CFLAGS += -nostdinc
-CFLAGS += -fno-pic -fno-PIC -fno-pie -fno-stack-protector
-CFLAGS += -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions
 
 INCLUDE_DIRS := . include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include
-
 INCLUDE_FLAGS := $(foreach dir,$(INCLUDE_DIRS),-I$(KP_DIR)/kernel/$(dir))
 
 objs := na_driver.o
@@ -24,7 +20,7 @@ NinMods.kpm: ${objs}
 	${CC} -r -o $@ $^
 
 %.o: %.c
-	${CC} $(CFLAGS) $(INCLUDE_FLAGS) -Tna_driver.lds -c -O2 -o $@ $<
+	${CC} $(CFLAGS) -Werror=implicit-function-declaration $(INCLUDE_FLAGS) -c -O2 -o $@ $<
 
 .PHONY: clean
 clean:

@@ -3,15 +3,14 @@
 
 #include <compiler.h>
 #include <kpmodule.h>
-#include <common.h>
-#include <kputils.h>
+#include <linux/printk.h>
+#include <uapi/asm-generic/unistd.h>
+#include <linux/uaccess.h>
 #include <syscall.h>
-#include <hook.h>
+#include <linux/string.h>
+#include <kputils.h>
 #include <kallsyms.h>
 #include <linux/errno.h>
-#include <linux/uaccess.h>
-#include <linux/string.h>
-#include <uapi/asm-generic/unistd.h>
 
 #ifndef __pid_t_defined
 typedef int pid_t;
@@ -47,7 +46,6 @@ struct na_cmd {
     uint8_t  data[MAX_RW_SIZE];
 };
 
-// Header-only view to keep kernel stack usage small
 struct na_cmd_hdr {
     uint32_t op;
     uint32_t pid;
@@ -59,6 +57,7 @@ struct na_cmd_hdr {
     char     pkg[MAX_PKG_NAME];
 };
 
+static unsigned long (*kf_copy_from_user)(void *, const void __user *, unsigned long) = 0;
 static struct task_struct *(*kf_find_task_by_vpid)(pid_t) = 0;
 static int (*kf_access_process_vm)(struct task_struct *, unsigned long, void *, int, unsigned int) = 0;
 
@@ -84,6 +83,12 @@ static int na_strncmp(const char *a, const char *b, uint32_t n)
         if (!a[i]) break;
     }
     return 0;
+}
+
+static unsigned long safe_copy_from_user(void *dst, const void __user *src, unsigned long n)
+{
+    if (!kf_copy_from_user) return n;
+    return kf_copy_from_user(dst, src, n);
 }
 
 static void detect_comm_offset(void)
@@ -117,7 +122,7 @@ static int read_mem_chunked(uint32_t pid, uint64_t addr, uint8_t __user *udata, 
         if (chunk > CHUNK_BUF_SIZE) chunk = CHUNK_BUF_SIZE;
         n = kf_access_process_vm(task, (unsigned long)(addr + done), buf, (int)chunk, 0);
         if (n <= 0) return -EIO;
-        if (compat_copy_to_user(udata + done, buf, (uint32_t)n) != 0) return -EFAULT;
+        if (compat_copy_to_user(udata + done, buf, n) != 0) return -EFAULT;
         done += (uint32_t)n;
         if ((uint32_t)n < chunk) break;
     }
@@ -140,7 +145,7 @@ static int write_mem_chunked(uint32_t pid, uint64_t addr, const uint8_t __user *
         uint32_t chunk = size - done;
         int n;
         if (chunk > CHUNK_BUF_SIZE) chunk = CHUNK_BUF_SIZE;
-        if (compat_copy_from_user(buf, udata + done, chunk) != 0) return -EFAULT;
+        if (safe_copy_from_user(buf, udata + done, chunk) != 0) return -EFAULT;
         n = kf_access_process_vm(task, (unsigned long)(addr + done), buf, (int)chunk, FOLL_WRITE);
         if (n <= 0) return -EIO;
         done += (uint32_t)n;
@@ -183,7 +188,7 @@ void before_prctl(hook_fargs5_t *args, void *udata)
     ucmd   = (struct na_cmd __user *)(unsigned long)syscall_argn(args, 2);
 
     if (!ucmd) goto out;
-    if (compat_copy_from_user(&hdr, ucmd, sizeof(hdr)) != 0) goto out;
+    if (safe_copy_from_user(&hdr, ucmd, sizeof(hdr)) != 0) goto out;
 
     hdr.result = -ENOSYS;
 
@@ -204,7 +209,7 @@ void before_prctl(hook_fargs5_t *args, void *udata)
         break;
     }
 
-    compat_copy_to_user(ucmd, &hdr, sizeof(hdr));
+    (void)compat_copy_to_user(ucmd, &hdr, sizeof(hdr));
 
 out:
     args->ret = 0;
@@ -216,6 +221,12 @@ static long na_init(const char *args, const char *event, void *__user reserved)
 {
     hook_err_t err;
 
+    kf_copy_from_user = (typeof(kf_copy_from_user))kallsyms_lookup_name("__arch_copy_from_user");
+    if (!kf_copy_from_user)
+        kf_copy_from_user = (typeof(kf_copy_from_user))kallsyms_lookup_name("_copy_from_user");
+    if (!kf_copy_from_user)
+        kf_copy_from_user = (typeof(kf_copy_from_user))kallsyms_lookup_name("copy_from_user");
+
     kf_find_task_by_vpid = (typeof(kf_find_task_by_vpid))kallsyms_lookup_name("find_task_by_vpid");
     if (!kf_find_task_by_vpid)
         kf_find_task_by_vpid = (typeof(kf_find_task_by_vpid))kallsyms_lookup_name("find_task_by_pid_ns");
@@ -223,16 +234,16 @@ static long na_init(const char *args, const char *event, void *__user reserved)
     kf_access_process_vm = (typeof(kf_access_process_vm))kallsyms_lookup_name("access_process_vm");
     detect_comm_offset();
 
-    err = inline_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
+    err = fp_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
     if (err == HOOK_NO_ERR) {
-        g_use_inline_hook = 1;
+        g_use_inline_hook = 0;
         g_hooked = 1;
         return 0;
     }
 
-    err = fp_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
+    err = inline_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
     if (err == HOOK_NO_ERR) {
-        g_use_inline_hook = 0;
+        g_use_inline_hook = 1;
         g_hooked = 1;
     }
     return 0;
