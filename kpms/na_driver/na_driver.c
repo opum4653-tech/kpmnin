@@ -122,7 +122,7 @@ static int read_mem_chunked(uint32_t pid, uint64_t addr, uint8_t __user *udata, 
         if (chunk > CHUNK_BUF_SIZE) chunk = CHUNK_BUF_SIZE;
         n = kf_access_process_vm(task, (unsigned long)(addr + done), buf, (int)chunk, 0);
         if (n <= 0) return -EIO;
-        if (compat_copy_to_user(udata + done, buf, n) != 0) return -EFAULT;
+        if (compat_copy_to_user(udata + done, buf, n) != n) return -EFAULT;
         done += (uint32_t)n;
         if ((uint32_t)n < chunk) break;
     }
