@@ -170,6 +170,49 @@ static int32_t get_pid_by_package(const char *pkg)
     return -1;
 }
 
+static inline int na_atomic_read(volatile int *p)
+{
+    int v = *p;
+    __asm__ volatile("dmb ish" ::: "memory");
+    return v;
+}
+
+static inline void na_atomic_set(volatile int *p, int v)
+{
+    __asm__ volatile("dmb ish" ::: "memory");
+    *p = v;
+}
+
+static inline void na_atomic_inc(volatile int *p)
+{
+    int tmp;
+    int res;
+    __asm__ volatile(
+        "1: ldxr %w0, [%2]\n"
+        "   add  %w0, %w0, #1\n"
+        "   stxr %w1, %w0, [%2]\n"
+        "   cbnz %w1, 1b\n"
+        "   dmb  ish\n"
+        : "=&r"(tmp), "=&r"(res)
+        : "r"(p)
+        : "memory");
+}
+
+static inline void na_atomic_dec(volatile int *p)
+{
+    int tmp;
+    int res;
+    __asm__ volatile(
+        "   dmb  ish\n"
+        "1: ldxr %w0, [%2]\n"
+        "   sub  %w0, %w0, #1\n"
+        "   stxr %w1, %w0, [%2]\n"
+        "   cbnz %w1, 1b\n"
+        : "=&r"(tmp), "=&r"(res)
+        : "r"(p)
+        : "memory");
+}
+
 void before_prctl(hook_fargs5_t *args, void *udata)
 {
     int option;
@@ -177,12 +220,12 @@ void before_prctl(hook_fargs5_t *args, void *udata)
     struct na_cmd __user *ucmd;
     struct na_cmd_hdr hdr;
 
-    if (__atomic_load_n(&g_exiting, __ATOMIC_ACQUIRE)) return;
+    if (na_atomic_read(&g_exiting)) return;
 
     option = (int)syscall_argn(args, 0);
     if (option != PRCTL_MAGIC) return;
 
-    __atomic_add_fetch(&g_in_flight, 1, __ATOMIC_ACQUIRE);
+    na_atomic_inc(&g_in_flight);
 
     subcmd = (int)syscall_argn(args, 1);
     ucmd   = (struct na_cmd __user *)(unsigned long)syscall_argn(args, 2);
@@ -214,7 +257,7 @@ void before_prctl(hook_fargs5_t *args, void *udata)
 out:
     args->ret = 0;
     args->skip_origin = 1;
-    __atomic_sub_fetch(&g_in_flight, 1, __ATOMIC_RELEASE);
+    na_atomic_dec(&g_in_flight);
 }
 
 static long na_init(const char *args, const char *event, void *__user reserved)
@@ -257,7 +300,7 @@ static long na_ctl0(const char *ctl_args, char *__user out_msg, int outlen)
 static long na_exit(void *__user reserved)
 {
     int tries = 0;
-    __atomic_store_n(&g_exiting, 1, __ATOMIC_RELEASE);
+    na_atomic_set(&g_exiting, 1);
 
     if (g_hooked) {
         if (g_use_inline_hook)
@@ -267,7 +310,7 @@ static long na_exit(void *__user reserved)
         g_hooked = 0;
     }
 
-    while (__atomic_load_n(&g_in_flight, __ATOMIC_ACQUIRE) > 0 && tries < 1000000) {
+    while (na_atomic_read(&g_in_flight) > 0 && tries < 1000000) {
         tries++;
     }
     return 0;

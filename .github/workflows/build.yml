@@ -63,6 +63,7 @@ jobs:
 
           cd ../na_driver
           make
+          ${TARGET_COMPILE}nm -u NinMods.kpm
 
       - name: Upload NinMods.kpm
         uses: actions/upload-artifact@v4

@@ -20,7 +20,7 @@ NinMods.kpm: ${objs}
 	${CC} -r -o $@ $^
 
 %.o: %.c
-	${CC} $(CFLAGS) -Werror=implicit-function-declaration $(INCLUDE_FLAGS) -c -O2 -o $@ $<
+	${CC} $(CFLAGS) -mno-outline-atomics -fno-builtin -mgeneral-regs-only -ffixed-x18 -Werror=implicit-function-declaration $(INCLUDE_FLAGS) -c -O2 -o $@ $<
 
 .PHONY: clean
 clean:
