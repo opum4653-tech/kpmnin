@@ -20,6 +20,7 @@ typedef int pid_t;
 #include <linux/mm_types.h>
 
 struct task_struct;
+struct mm_struct;
 struct pid;
 
 struct task_struct_offset {
