@@ -89,10 +89,6 @@ struct na_cmd_hdr {
 
 static unsigned long (*kf_copy_from_user)(void *, const void __user *, unsigned long) = 0;
 static struct task_struct *(*kf_find_task_by_vpid)(pid_t) = 0;
-static struct pid *(*kf_find_get_pid)(pid_t) = 0;
-static struct task_struct *(*kf_get_pid_task)(struct pid *, int) = 0;
-static void (*kf_put_pid)(struct pid *) = 0;
-static void (*kf_put_task_struct)(struct task_struct *) = 0;
 static struct mm_struct *(*kf_get_task_mm)(struct task_struct *) = 0;
 static void (*kf_mmput)(struct mm_struct *) = 0;
 static int (*kf_access_process_vm)(struct task_struct *, unsigned long, void *, int, unsigned int) = 0;
@@ -186,29 +182,6 @@ static inline void na_atomic_dec(volatile int *p)
         : "=&r"(tmp), "=&r"(res)
         : "r"(p)
         : "memory");
-}
-
-static struct task_struct *acquire_task(pid_t pid, int *refcounted)
-{
-    *refcounted = 0;
-    if (kf_find_get_pid && kf_get_pid_task && kf_put_pid && kf_put_task_struct) {
-        struct pid *kpid = kf_find_get_pid(pid);
-        struct task_struct *task;
-        if (!kpid) return 0;
-        task = kf_get_pid_task(kpid, 0);
-        kf_put_pid(kpid);
-        if (task) *refcounted = 1;
-        return task;
-    }
-    if (kf_find_task_by_vpid) return kf_find_task_by_vpid(pid);
-    return 0;
-}
-
-static void release_task(struct task_struct *task, int refcounted)
-{
-    if (task && refcounted && kf_put_task_struct) {
-        kf_put_task_struct(task);
-    }
 }
 
 static int calibrate_phys_rw(struct task_struct *sample_task)
@@ -321,15 +294,15 @@ static int read_mem_chunked(uint32_t pid, uint64_t addr, uint8_t __user *udata, 
     struct task_struct *task;
     struct mm_struct *mm = 0;
     uint64_t pgd = 0;
-    int task_ref = 0;
     int mm_ref = 0;
     uint8_t buf[CHUNK_BUF_SIZE];
     uint32_t done = 0;
     int ret = 0;
 
+    if (!kf_find_task_by_vpid) return -ENOSYS;
     if (addr < 0x10000ULL || size == 0 || size > MAX_RW_SIZE) return -EINVAL;
 
-    task = acquire_task((pid_t)pid, &task_ref);
+    task = kf_find_task_by_vpid((pid_t)pid);
     if (!task) return -ESRCH;
 
     if (!na_atomic_read(&g_phys_ready)) calibrate_phys_rw(task);
@@ -366,7 +339,6 @@ static int read_mem_chunked(uint32_t pid, uint64_t addr, uint8_t __user *udata, 
     }
 
     release_task_mm(mm, mm_ref);
-    release_task(task, task_ref);
     if (ret != 0) return ret;
     return (done == size) ? 0 : -EIO;
 }
@@ -376,15 +348,15 @@ static int write_mem_chunked(uint32_t pid, uint64_t addr, const uint8_t __user *
     struct task_struct *task;
     struct mm_struct *mm = 0;
     uint64_t pgd = 0;
-    int task_ref = 0;
     int mm_ref = 0;
     uint8_t buf[CHUNK_BUF_SIZE];
     uint32_t done = 0;
     int ret = 0;
 
+    if (!kf_find_task_by_vpid) return -ENOSYS;
     if (addr < 0x10000ULL || size == 0 || size > MAX_RW_SIZE) return -EINVAL;
 
-    task = acquire_task((pid_t)pid, &task_ref);
+    task = kf_find_task_by_vpid((pid_t)pid);
     if (!task) return -ESRCH;
 
     if (!na_atomic_read(&g_phys_ready)) calibrate_phys_rw(task);
@@ -422,7 +394,6 @@ static int write_mem_chunked(uint32_t pid, uint64_t addr, const uint8_t __user *
     }
 
     release_task_mm(mm, mm_ref);
-    release_task(task, task_ref);
     if (ret != 0) return ret;
     return (done == size) ? 0 : -EIO;
 }
@@ -430,14 +401,13 @@ static int write_mem_chunked(uint32_t pid, uint64_t addr, const uint8_t __user *
 static int32_t get_pid_by_package(const char *pkg)
 {
     int32_t pid;
+    struct task_struct *task;
     char comm[16];
-    if (!g_comm_offset || !pkg || !pkg[0]) return -1;
+    if (!kf_find_task_by_vpid || !g_comm_offset || !pkg || !pkg[0]) return -1;
     for (pid = 1; pid < 32768; pid++) {
-        int ref = 0;
-        struct task_struct *task = acquire_task((pid_t)pid, &ref);
+        task = kf_find_task_by_vpid((pid_t)pid);
         if (!task) continue;
         na_memcpy(comm, (const char *)task + g_comm_offset, 15);
-        release_task(task, ref);
         comm[15] = '\0';
         if (na_strncmp(comm, pkg, 15) == 0) return pid;
     }
@@ -512,10 +482,6 @@ static long na_init(const char *args, const char *event, void *__user reserved)
     if (!kf_find_task_by_vpid)
         kf_find_task_by_vpid = (typeof(kf_find_task_by_vpid))kallsyms_lookup_name("find_task_by_pid_ns");
 
-    kf_find_get_pid = (typeof(kf_find_get_pid))kallsyms_lookup_name("find_get_pid");
-    kf_get_pid_task = (typeof(kf_get_pid_task))kallsyms_lookup_name("get_pid_task");
-    kf_put_pid = (typeof(kf_put_pid))kallsyms_lookup_name("put_pid");
-    kf_put_task_struct = (typeof(kf_put_task_struct))kallsyms_lookup_name("__put_task_struct");
     kf_get_task_mm = (typeof(kf_get_task_mm))kallsyms_lookup_name("get_task_mm");
     kf_mmput = (typeof(kf_mmput))kallsyms_lookup_name("mmput");
     g_init_mm = (void *)kallsyms_lookup_name("init_mm");
