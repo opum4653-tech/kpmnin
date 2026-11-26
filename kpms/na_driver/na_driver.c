@@ -11,14 +11,15 @@
 #include <kputils.h>
 #include <kallsyms.h>
 #include <linux/errno.h>
-#include <linux/sched.h>
-#include <linux/mm_types.h>
-#include <pgtable.h>
 
 #ifndef __pid_t_defined
 typedef int pid_t;
 #define __pid_t_defined
 #endif
+
+#include <linux/sched.h>
+#include <linux/mm_types.h>
+#include <pgtable.h>
 
 #define FOLL_WRITE       0x01
 #define PTE_VALID_BIT    (1ULL << 0)
