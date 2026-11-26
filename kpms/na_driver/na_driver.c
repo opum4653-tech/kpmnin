@@ -444,49 +444,6 @@ static int32_t get_pid_by_package(const char *pkg)
     return -1;
 }
 
-static inline int na_atomic_read(volatile int *p)
-{
-    int v = *p;
-    __asm__ volatile("dmb ish" ::: "memory");
-    return v;
-}
-
-static inline void na_atomic_set(volatile int *p, int v)
-{
-    __asm__ volatile("dmb ish" ::: "memory");
-    *p = v;
-}
-
-static inline void na_atomic_inc(volatile int *p)
-{
-    int tmp;
-    int res;
-    __asm__ volatile(
-        "1: ldxr %w0, [%2]\n"
-        "   add  %w0, %w0, #1\n"
-        "   stxr %w1, %w0, [%2]\n"
-        "   cbnz %w1, 1b\n"
-        "   dmb  ish\n"
-        : "=&r"(tmp), "=&r"(res)
-        : "r"(p)
-        : "memory");
-}
-
-static inline void na_atomic_dec(volatile int *p)
-{
-    int tmp;
-    int res;
-    __asm__ volatile(
-        "   dmb  ish\n"
-        "1: ldxr %w0, [%2]\n"
-        "   sub  %w0, %w0, #1\n"
-        "   stxr %w1, %w0, [%2]\n"
-        "   cbnz %w1, 1b\n"
-        : "=&r"(tmp), "=&r"(res)
-        : "r"(p)
-        : "memory");
-}
-
 void before_prctl(hook_fargs5_t *args, void *udata)
 {
     int option;
