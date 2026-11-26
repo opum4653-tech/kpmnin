@@ -17,9 +17,34 @@ typedef int pid_t;
 #define __pid_t_defined
 #endif
 
-#include <linux/sched.h>
 #include <linux/mm_types.h>
-#include <pgtable.h>
+
+struct task_struct;
+struct pid;
+
+struct task_struct_offset {
+    int16_t pid_offset;
+    int16_t tgid_offset;
+    int16_t thread_pid_offset;
+    int16_t ptracer_cred_offset;
+    int16_t real_cred_offset;
+    int16_t cred_offset;
+    int16_t comm_offset;
+    int16_t fs_offset;
+    int16_t files_offset;
+    int16_t loginuid_offset;
+    int16_t sessionid_offset;
+    int16_t seccomp_offset;
+    int16_t security_offset;
+    int16_t stack_offset;
+    int16_t tasks_offset;
+    int16_t mm_offset;
+    int16_t active_mm_offset;
+};
+
+extern struct task_struct_offset task_struct_offset;
+extern uint64_t pgtable_phys(uint64_t pgd, uint64_t va);
+extern uint64_t *pgtable_entry(uint64_t pgd, uint64_t va);
 
 #define FOLL_WRITE       0x01
 #define PTE_VALID_BIT    (1ULL << 0)
@@ -64,7 +89,7 @@ struct na_cmd_hdr {
 static unsigned long (*kf_copy_from_user)(void *, const void __user *, unsigned long) = 0;
 static struct task_struct *(*kf_find_task_by_vpid)(pid_t) = 0;
 static struct pid *(*kf_find_get_pid)(pid_t) = 0;
-static struct task_struct *(*kf_get_pid_task)(struct pid *, enum pid_type) = 0;
+static struct task_struct *(*kf_get_pid_task)(struct pid *, int) = 0;
 static void (*kf_put_pid)(struct pid *) = 0;
 static void (*kf_put_task_struct)(struct task_struct *) = 0;
 static struct mm_struct *(*kf_get_task_mm)(struct task_struct *) = 0;
@@ -169,7 +194,7 @@ static struct task_struct *acquire_task(pid_t pid, int *refcounted)
         struct pid *kpid = kf_find_get_pid(pid);
         struct task_struct *task;
         if (!kpid) return 0;
-        task = kf_get_pid_task(kpid, PIDTYPE_PID);
+        task = kf_get_pid_task(kpid, 0);
         kf_put_pid(kpid);
         if (task) *refcounted = 1;
         return task;
@@ -283,7 +308,7 @@ static int try_phys_rw_chunk(uint64_t pgd, uint64_t va, void *kbuf, uint32_t chu
     kva = (void *)(pa + g_linear_voffset);
     if (is_write) {
         na_phys_copy(kva, kbuf, chunk);
-        asm volatile("dmb ish" ::: "memory");
+        __asm__ volatile("dmb ish" ::: "memory");
     } else {
         na_phys_copy(kbuf, kva, chunk);
     }
@@ -540,7 +565,7 @@ static long na_init(const char *args, const char *event, void *__user reserved)
     {
         uint64_t tcr_el1 = 0;
         uint64_t tg1;
-        asm volatile("mrs %0, tcr_el1" : "=r"(tcr_el1));
+        __asm__ volatile("mrs %0, tcr_el1" : "=r"(tcr_el1));
         tg1 = (tcr_el1 >> 30) & 3ULL;
         if (tg1 == 1ULL) g_page_size = 16384ULL;
         else if (tg1 == 3ULL) g_page_size = 65536ULL;
