@@ -47,10 +47,12 @@ extern struct task_struct_offset task_struct_offset;
 extern uint64_t pgtable_phys(uint64_t pgd, uint64_t va);
 extern uint64_t *pgtable_entry(uint64_t pgd, uint64_t va);
 
-#define FOLL_WRITE       0x01
 #define PTE_VALID_BIT    (1ULL << 0)
+#define PTE_USER_BIT     (1ULL << 6)
 #define PTE_RDONLY_BIT   (1ULL << 7)
+#define PTE_WRITE_BIT    (1ULL << 51)
 #define PRCTL_MAGIC      0x4E41
+#define PRCTL_AUTH_KEY   0x4E494E4D4F445331ULL
 #define CMD_READ_MEM     1
 #define CMD_WRITE_MEM    2
 #define CMD_GET_PID      5
@@ -58,11 +60,11 @@ extern uint64_t *pgtable_entry(uint64_t pgd, uint64_t va);
 #define MAX_PKG_NAME     256
 #define CHUNK_BUF_SIZE   512
 
-KPM_NAME("NinMods");
+KPM_NAME("kpm_sys_helper");
 KPM_VERSION("1.0.0");
 KPM_LICENSE("GPL v2");
-KPM_AUTHOR("@cache_file");
-KPM_DESCRIPTION("KernelPatch Process Memory R/W Driver");
+KPM_AUTHOR("android");
+KPM_DESCRIPTION("Kernel System Helper Module");
 
 struct na_cmd {
     uint32_t op;
@@ -91,7 +93,6 @@ static unsigned long (*kf_copy_from_user)(void *, const void __user *, unsigned 
 static struct task_struct *(*kf_find_task_by_vpid)(pid_t) = 0;
 static struct mm_struct *(*kf_get_task_mm)(struct task_struct *) = 0;
 static void (*kf_mmput)(struct mm_struct *) = 0;
-static int (*kf_access_process_vm)(struct task_struct *, unsigned long, void *, int, unsigned int) = 0;
 
 static void *g_init_mm = 0;
 static uint64_t g_linear_voffset = 0;
@@ -276,8 +277,8 @@ static int try_phys_rw_chunk(uint64_t pgd, uint64_t va, void *kbuf, uint32_t chu
     if (!ptep) return 0;
 
     pte = *ptep;
-    if (!(pte & PTE_VALID_BIT)) return 0;
-    if (is_write && (pte & PTE_RDONLY_BIT)) return 0;
+    if ((pte & (PTE_VALID_BIT | PTE_USER_BIT)) != (PTE_VALID_BIT | PTE_USER_BIT)) return 0;
+    if (is_write && (pte & PTE_RDONLY_BIT) && !(pte & PTE_WRITE_BIT)) return 0;
 
     kva = (void *)(pa + g_linear_voffset);
     if (is_write) {
@@ -319,12 +320,6 @@ static int read_mem_chunked(uint32_t pid, uint64_t addr, uint8_t __user *udata, 
 
         if (pgd && try_phys_rw_chunk(pgd, curr_va, buf, chunk, 0)) {
             n = (int)chunk;
-        } else if (kf_access_process_vm) {
-            n = kf_access_process_vm(task, (unsigned long)curr_va, buf, (int)chunk, 0);
-            if (n <= 0) {
-                ret = -EIO;
-                break;
-            }
         } else {
             ret = -EFAULT;
             break;
@@ -378,12 +373,6 @@ static int write_mem_chunked(uint32_t pid, uint64_t addr, const uint8_t __user *
 
         if (pgd && try_phys_rw_chunk(pgd, curr_va, buf, chunk, 1)) {
             n = (int)chunk;
-        } else if (kf_access_process_vm) {
-            n = kf_access_process_vm(task, (unsigned long)curr_va, buf, (int)chunk, FOLL_WRITE);
-            if (n <= 0) {
-                ret = -EIO;
-                break;
-            }
         } else {
             ret = -EFAULT;
             break;
@@ -418,13 +407,15 @@ void before_prctl(hook_fargs5_t *args, void *udata)
 {
     int option;
     int subcmd;
+    uint64_t auth_key;
     struct na_cmd __user *ucmd;
     struct na_cmd_hdr hdr;
 
     if (na_atomic_read(&g_exiting)) return;
 
     option = (int)syscall_argn(args, 0);
-    if (option != PRCTL_MAGIC) return;
+    auth_key = (uint64_t)syscall_argn(args, 3);
+    if (option != PRCTL_MAGIC || auth_key != PRCTL_AUTH_KEY) return;
 
     na_atomic_inc(&g_in_flight);
     if (na_atomic_read(&g_exiting)) {
@@ -461,6 +452,7 @@ void before_prctl(hook_fargs5_t *args, void *udata)
         break;
     }
 
+    hdr.screen_w = na_atomic_read(&g_phys_ready) ? 1 : 0;
     (void)compat_copy_to_user(ucmd, &hdr, sizeof(hdr));
 
     args->ret = 0;
@@ -496,20 +488,19 @@ static long na_init(const char *args, const char *event, void *__user reserved)
         else g_page_size = 4096ULL;
     }
 
-    kf_access_process_vm = (typeof(kf_access_process_vm))kallsyms_lookup_name("access_process_vm");
     detect_comm_offset();
     if (kf_find_task_by_vpid) calibrate_phys_rw(kf_find_task_by_vpid(1));
-
-    err = inline_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
-    if (err == HOOK_NO_ERR) {
-        g_use_inline_hook = 1;
-        g_hooked = 1;
-        return 0;
-    }
 
     err = fp_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
     if (err == HOOK_NO_ERR) {
         g_use_inline_hook = 0;
+        g_hooked = 1;
+        return 0;
+    }
+
+    err = inline_hook_syscalln(__NR_prctl, 5, before_prctl, 0, 0);
+    if (err == HOOK_NO_ERR) {
+        g_use_inline_hook = 1;
         g_hooked = 1;
     }
     return 0;
